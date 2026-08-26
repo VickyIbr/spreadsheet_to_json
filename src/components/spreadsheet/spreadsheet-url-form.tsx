@@ -48,9 +48,8 @@ export function SpreadsheetUrlForm({
         </CardTitle>
 
         <CardDescription>
-          Paste a Google Sheets, OneDrive,
-          SharePoint, or direct XLSX URL.
-        </CardDescription>
+  Paste a Google Sheets URL. Make sure “Anyone with the link” is set to Viewer.
+</CardDescription>
       </CardHeader>
 
       <CardContent>

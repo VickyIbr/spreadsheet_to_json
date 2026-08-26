@@ -29,7 +29,6 @@ export default function Home() {
           onLoad={spreadsheet.loadSpreadsheet}
         />
 
-        <ErrorMessage message={spreadsheet.error} />
 
         {spreadsheet.sheets.length > 0 && (
           <SheetSelector

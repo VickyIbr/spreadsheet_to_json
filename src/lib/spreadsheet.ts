@@ -1,89 +1,56 @@
 import ExcelJS from "exceljs";
 
-export type SheetRow = Record<string, unknown>;
+import {
+  convertSpreadsheetUrl,
+} from "./spreadsheet-url";
 
-export type SpreadsheetWorkbook = ExcelJS.Workbook;
+import type {
+  ConvertedSheets,
+  SheetRow,
+  SpreadsheetCellValue,
+  SpreadsheetConversionOptions,
+  SpreadsheetWorkbook,
+} from "@/types/spreadsheet";
 
-export type ConvertedSheets = {
-  result: Record<string, SheetRow[]>;
-  json: string;
-  sheetNames: string[];
+const DEFAULT_CONVERSION_OPTIONS: Required<
+  SpreadsheetConversionOptions
+> = {
+  headerRow: 1,
+  dataStartRow: 2,
+  emptyHeaderPrefix: "column",
+  includeEmptyRows: false,
+  makeHeadersUnique: true,
 };
 
-import { convertSpreadsheetUrl } from "./spreadsheet-url";
+function resolveOptions(
+  options?: SpreadsheetConversionOptions
+): Required<SpreadsheetConversionOptions> {
+  const headerRow =
+    options?.headerRow ??
+    DEFAULT_CONVERSION_OPTIONS.headerRow;
 
-export async function fetchSpreadsheet(
-  inputUrl: string
-): Promise<ExcelJS.Workbook> {
-  const {
-    downloadUrl,
-    provider,
-  } = convertSpreadsheetUrl(inputUrl);
-
-  console.log("Spreadsheet URL:", {
-    inputUrl,
-    downloadUrl,
-    provider,
-  });
-
-  const response = await fetch(downloadUrl);
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch spreadsheet (${response.status}).`
-    );
-  }
-
-  const contentType =
-    response.headers.get("content-type") ?? "";
-
-  console.log("Spreadsheet response:", {
-    url: response.url,
-    contentType,
-  });
-
-  const arrayBuffer = await response.arrayBuffer();
-
-  if (!arrayBuffer.byteLength) {
-    throw new Error(
-      "The spreadsheet response is empty."
-    );
-  }
-
-  const workbook = new ExcelJS.Workbook();
-
-  try {
-    await workbook.xlsx.load(arrayBuffer);
-  } catch {
-    throw new Error(
-      "The provided URL did not return a valid XLSX spreadsheet."
-    );
-  }
-
-  console.log(
-    "ExcelJS worksheets:",
-    workbook.worksheets.map((worksheet) => ({
-      id: worksheet.id,
-      name: worksheet.name,
-      state: worksheet.state,
-      rowCount: worksheet.rowCount,
-      columnCount: worksheet.columnCount,
-    }))
-  );
-
-  if (!workbook.worksheets.length) {
-    throw new Error(
-      "No sheets found in this spreadsheet."
-    );
-  }
-
-  return workbook;
+  return {
+    ...DEFAULT_CONVERSION_OPTIONS,
+    ...options,
+    headerRow,
+    dataStartRow:
+      options?.dataStartRow ??
+      headerRow + 1,
+  };
 }
 
+function isRecord(
+  value: unknown
+): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null
+  );
+}
 
-function getCellValue(
+function normalizeCellValue(
   cell: ExcelJS.Cell
-): unknown {
+): SpreadsheetCellValue {
   const value = cell.value;
 
   if (value === null || value === undefined) {
@@ -102,29 +69,85 @@ function getCellValue(
     return value.toISOString();
   }
 
-  if (typeof value === "object") {
-    if ("text" in value) {
+  if (isRecord(value)) {
+    if (
+      "text" in value &&
+      typeof value.text === "string"
+    ) {
       return value.text;
     }
 
     if ("result" in value) {
-      return value.result;
-    }
+      const result = value.result;
 
-    if ("hyperlink" in value && "text" in value) {
-      return value.text;
+      if (
+        result === null ||
+        result === undefined
+      ) {
+        return null;
+      }
+
+      if (
+        typeof result === "string" ||
+        typeof result === "number" ||
+        typeof result === "boolean"
+      ) {
+        return result;
+      }
+
+      if (result instanceof Date) {
+        return result.toISOString();
+      }
+
+      return String(result);
     }
   }
 
   return String(value);
 }
 
-function worksheetToJson(
-  worksheet: ExcelJS.Worksheet
-): SheetRow[] {
-  const rows: SheetRow[] = [];
+function createHeader(
+  cell: ExcelJS.Cell,
+  columnNumber: number,
+  options: Required<SpreadsheetConversionOptions>
+): string {
+  const value = normalizeCellValue(cell);
 
-  const headerRow = worksheet.getRow(1);
+  if (
+    value === null ||
+    String(value).trim() === ""
+  ) {
+    return `${options.emptyHeaderPrefix}_${columnNumber}`;
+  }
+
+  return String(value).trim();
+}
+
+function makeUniqueHeaders(
+  headers: string[]
+): string[] {
+  const counts = new Map<string, number>();
+
+  return headers.map((header) => {
+    const count = counts.get(header) ?? 0;
+
+    counts.set(header, count + 1);
+
+    if (count === 0) {
+      return header;
+    }
+
+    return `${header}_${count + 1}`;
+  });
+}
+
+function getWorksheetHeaders(
+  worksheet: ExcelJS.Worksheet,
+  options: Required<SpreadsheetConversionOptions>
+): string[] {
+  const headerRow = worksheet.getRow(
+    options.headerRow
+  );
 
   const headers: string[] = [];
 
@@ -133,55 +156,72 @@ function worksheetToJson(
       includeEmpty: true,
     },
     (cell, columnNumber) => {
-      const value = getCellValue(cell);
-
-      const header =
-        value === null || value === ""
-          ? `column_${columnNumber}`
-          : String(value).trim();
-
-      headers.push(header);
+      headers.push(
+        createHeader(
+          cell,
+          columnNumber,
+          options
+        )
+      );
     }
   );
 
+  return options.makeHeadersUnique
+    ? makeUniqueHeaders(headers)
+    : headers;
+}
+
+function hasRowValue(
+  row: SheetRow
+): boolean {
+  return Object.values(row).some(
+    (value) =>
+      value !== null &&
+      String(value).trim() !== ""
+  );
+}
+
+function worksheetToJson(
+  worksheet: ExcelJS.Worksheet,
+  options: Required<SpreadsheetConversionOptions>
+): SheetRow[] {
+  const headers = getWorksheetHeaders(
+    worksheet,
+    options
+  );
+
   if (!headers.length) {
-    return rows;
+    return [];
   }
+
+  const rows: SheetRow[] = [];
 
   worksheet.eachRow(
     {
-      includeEmpty: false,
+      includeEmpty: options.includeEmptyRows,
     },
     (row, rowNumber) => {
-      // Row 1 = headers
-      if (rowNumber === 1) {
+      if (rowNumber < options.dataStartRow) {
         return;
       }
 
       const item: SheetRow = {};
-      let hasValue = false;
 
       for (
         let columnNumber = 1;
         columnNumber <= headers.length;
         columnNumber++
       ) {
-        const value = getCellValue(
-          row.getCell(columnNumber)
-        );
-
-        item[headers[columnNumber - 1]] = value;
-
-        if (
-          value !== null &&
-          value !== undefined &&
-          String(value).trim() !== ""
-        ) {
-          hasValue = true;
-        }
+        item[headers[columnNumber - 1]] =
+          normalizeCellValue(
+            row.getCell(columnNumber)
+          );
       }
 
-      if (hasValue) {
+      if (
+        options.includeEmptyRows ||
+        hasRowValue(item)
+      ) {
         rows.push(item);
       }
     }
@@ -190,25 +230,93 @@ function worksheetToJson(
   return rows;
 }
 
+export async function fetchSpreadsheet(
+  inputUrl: string
+): Promise<SpreadsheetWorkbook> {
+  const { downloadUrl } =
+    convertSpreadsheetUrl(inputUrl);
+
+  let response: Response;
+
+  try {
+    response = await fetch(downloadUrl);
+  } catch {
+    throw new Error(
+      "Unable to access this spreadsheet. The server may not allow browser requests (CORS)."
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch spreadsheet (${response.status}).`
+    );
+  }
+
+  const arrayBuffer =
+    await response.arrayBuffer();
+
+  if (!arrayBuffer.byteLength) {
+    throw new Error(
+      "The spreadsheet response is empty."
+    );
+  }
+
+  const workbook = new ExcelJS.Workbook();
+
+  try {
+    await workbook.xlsx.load(arrayBuffer);
+  } catch {
+    throw new Error(
+      "The provided URL did not return a valid XLSX spreadsheet."
+    );
+  }
+
+  if (!workbook.worksheets.length) {
+    throw new Error(
+      "No sheets found in this spreadsheet."
+    );
+  }
+
+  return workbook;
+}
+
 export function convertSheets(
   workbook: SpreadsheetWorkbook,
-  selectedSheets: string[]
+  selectedSheets: string[],
+  options?: SpreadsheetConversionOptions
 ): ConvertedSheets {
-  const result: Record<string, SheetRow[]> = {};
+  const resolvedOptions =
+    resolveOptions(options);
+
+  const result: Record<
+    string,
+    SheetRow[]
+  > = {};
 
   for (const sheetName of selectedSheets) {
-    const worksheet = workbook.getWorksheet(sheetName);
+    const worksheet =
+      workbook.getWorksheet(sheetName);
 
     if (!worksheet) {
       continue;
     }
 
-    result[sheetName] = worksheetToJson(worksheet);
+    result[sheetName] =
+      worksheetToJson(
+        worksheet,
+        resolvedOptions
+      );
   }
+
+  const sheetNames = Object.keys(result);
 
   return {
     result,
-    json: JSON.stringify(result, null, 2),
-    sheetNames: Object.keys(result),
+    sheetNames,
+    json: JSON.stringify(
+      result,
+      null,
+      2
+    ),
   };
 }

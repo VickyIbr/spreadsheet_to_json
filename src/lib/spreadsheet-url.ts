@@ -1,100 +1,117 @@
-export type SpreadsheetUrlResult = {
-  originalUrl: string;
-  downloadUrl: string;
-  provider: "google-sheets" | "microsoft" | "direct";
-};
+import type {
+  SpreadsheetProvider,
+  SpreadsheetUrlResult,
+} from "@/types/spreadsheet";
+
+const GOOGLE_SHEETS_HOST = "docs.google.com";
+const GOOGLE_USER_CONTENT_HOST =
+  "docs.googleusercontent.com";
+
+const MICROSOFT_HOSTS = [
+  "onedrive.live.com",
+  "1drv.ms",
+];
+
+const MICROSOFT_HOST_SUFFIXES = [
+  ".sharepoint.com",
+];
+
+function createResult(
+  originalUrl: string,
+  downloadUrl: string,
+  provider: SpreadsheetProvider
+): SpreadsheetUrlResult {
+  return {
+    originalUrl,
+    downloadUrl,
+    provider,
+  };
+}
+
+function isMicrosoftHost(hostname: string): boolean {
+  return (
+    MICROSOFT_HOSTS.includes(hostname) ||
+    MICROSOFT_HOST_SUFFIXES.some((suffix) =>
+      hostname.endsWith(suffix)
+    )
+  );
+}
+
+function resolveGoogleSheets(
+  url: URL,
+  originalUrl: string
+): SpreadsheetUrlResult | null {
+  if (
+    url.hostname === GOOGLE_USER_CONTENT_HOST
+  ) {
+    return createResult(
+      originalUrl,
+      originalUrl,
+      "google-sheets"
+    );
+  }
+
+  if (
+    url.hostname !== GOOGLE_SHEETS_HOST ||
+    !url.pathname.startsWith("/spreadsheets/d/")
+  ) {
+    return null;
+  }
+
+  const match = url.pathname.match(
+    /^\/spreadsheets\/d\/([^/]+)/
+  );
+
+  if (!match) {
+    throw new Error("Invalid Google Sheets URL.");
+  }
+
+  const [, spreadsheetId] = match;
+
+  return createResult(
+    originalUrl,
+    `https://${GOOGLE_SHEETS_HOST}/spreadsheets/d/${spreadsheetId}/export?format=xlsx`,
+    "google-sheets"
+  );
+}
 
 export function convertSpreadsheetUrl(
   input: string
 ): SpreadsheetUrlResult {
-  const url = input.trim();
+  const originalUrl = input.trim();
 
-  if (!url) {
+  if (!originalUrl) {
     throw new Error("Spreadsheet URL is required.");
   }
 
-  let parsedUrl: URL;
+  let url: URL;
 
   try {
-    parsedUrl = new URL(url);
+    url = new URL(originalUrl);
   } catch {
     throw new Error("Invalid spreadsheet URL.");
   }
 
-  /**
-   * Google Sheets
-   *
-   * https://docs.google.com/spreadsheets/d/{ID}/edit
-   *
-   * becomes:
-   *
-   * https://docs.google.com/spreadsheets/d/{ID}/export?format=xlsx
-   */
-  if (
-    parsedUrl.hostname === "docs.google.com" &&
-    parsedUrl.pathname.startsWith("/spreadsheets/d/")
-  ) {
-    const match = parsedUrl.pathname.match(
-      /^\/spreadsheets\/d\/([^/]+)/
+  const googleResult = resolveGoogleSheets(
+    url,
+    originalUrl
+  );
+
+  if (googleResult) {
+    return googleResult;
+  }
+
+  if (isMicrosoftHost(url.hostname)) {
+    return createResult(
+      originalUrl,
+      originalUrl,
+      "microsoft"
     );
-
-    if (!match) {
-      throw new Error(
-        "Invalid Google Sheets URL."
-      );
-    }
-
-    const spreadsheetId = match[1];
-
-    return {
-      originalUrl: url,
-      downloadUrl:
-        `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=xlsx`,
-      provider: "google-sheets",
-    };
   }
 
-  /**
-   * Google Sheets published/export URLs
-   *
-   * Example:
-   * https://docs.google.com/spreadsheets/d/{ID}/export?format=xlsx
-   */
-  if (
-    parsedUrl.hostname === "docs.googleusercontent.com"
-  ) {
-    return {
-      originalUrl: url,
-      downloadUrl: url,
-      provider: "google-sheets",
-    };
-  }
-
-  /**
-   * Microsoft Excel / OneDrive
-   *
-   * Microsoft has several URL formats.
-   * For now we keep the original URL because converting
-   * OneDrive share links requires additional handling.
-   */
-  if (
-    parsedUrl.hostname.includes("onedrive.live.com") ||
-    parsedUrl.hostname.includes("1drv.ms") ||
-    parsedUrl.hostname.includes("sharepoint.com")
-  ) {
-    return {
-      originalUrl: url,
-      downloadUrl: url,
-      provider: "microsoft",
-    };
-  }
-
-  /**
-   * Assume direct XLSX / spreadsheet file.
-   */
-  return {
-    originalUrl: url,
-    downloadUrl: url,
-    provider: "direct",
-  };
+  return createResult(
+    originalUrl,
+    originalUrl,
+    "direct"
+  );
 }

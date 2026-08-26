@@ -2,19 +2,21 @@
 
 import {
   useCallback,
+  useMemo,
   useState,
 } from "react";
-
-import type ExcelJS from "exceljs";
 
 import {
   convertSheets,
   fetchSpreadsheet,
+  getSpreadsheetSelection,
 } from "@/lib/spreadsheet";
 
 import type {
   ConvertedSheets,
   SpreadsheetConversionOptions,
+  SpreadsheetSelection,
+  SpreadsheetWorkbook,
 } from "@/types/spreadsheet";
 
 interface UseSpreadsheetOptions
@@ -26,23 +28,23 @@ export function useSpreadsheet(
   options?: UseSpreadsheetOptions
 ) {
   const {
-    downloadFileName = "spreadsheet.json",
+    downloadFileName =
+      "spreadsheet.json",
     ...conversionOptions
   } = options ?? {};
 
-  const [url, setUrl] = useState("");
+  const [url, setUrl] =
+    useState("");
 
   const [workbook, setWorkbook] =
-    useState<ExcelJS.Workbook | null>(null);
+    useState<SpreadsheetWorkbook | null>(
+      null
+    );
 
-  const [sheets, setSheets] =
-    useState<string[]>([]);
-
-  const [selectedSheets, setSelectedSheets] =
-    useState<string[]>([]);
-
-  const [conversion, setConversion] =
-    useState<ConvertedSheets | null>(null);
+  const [selection, setSelection] =
+    useState<SpreadsheetSelection>(
+      {}
+    );
 
   const [loading, setLoading] =
     useState(false);
@@ -50,16 +52,56 @@ export function useSpreadsheet(
   const [error, setError] =
     useState<string | null>(null);
 
-  const clearSpreadsheet = useCallback(() => {
-    setWorkbook(null);
-    setSheets([]);
-    setSelectedSheets([]);
-    setConversion(null);
-  }, []);
+  const [conversion, setConversion] =
+    useState<ConvertedSheets | null>(
+      null
+    );
 
-  const loadSpreadsheet = useCallback(
-    async () => {
-      const inputUrl = url.trim();
+  const sheets =
+    useMemo(
+      () => Object.keys(selection),
+      [selection]
+    );
+
+  const selectedSheets =
+    useMemo(
+      () =>
+        Object.values(selection)
+          .filter((sheet) =>
+            sheet.columns.some(
+              (column) =>
+                column.selected
+            )
+          )
+          .map((sheet) => sheet.name),
+      [selection]
+    );
+
+  const selectedColumnCount =
+    useMemo(
+      () =>
+        Object.values(selection).reduce(
+          (total, sheet) =>
+            total +
+            sheet.columns.filter(
+              (column) =>
+                column.selected
+            ).length,
+          0
+        ),
+      [selection]
+    );
+
+  const clearSelection =
+    useCallback(() => {
+      setSelection({});
+      setConversion(null);
+    }, []);
+
+  const loadSpreadsheet =
+    useCallback(async () => {
+      const inputUrl =
+        url.trim();
 
       if (!inputUrl) {
         setError(
@@ -71,7 +113,7 @@ export function useSpreadsheet(
       setLoading(true);
       setError(null);
       setConversion(null);
-      clearSpreadsheet();
+      clearSelection();
 
       try {
         const nextWorkbook =
@@ -79,62 +121,320 @@ export function useSpreadsheet(
             inputUrl
           );
 
-        const availableSheets =
-          nextWorkbook.worksheets.map(
-            (worksheet) =>
-              worksheet.name
+        const nextSelection =
+          getSpreadsheetSelection(
+            nextWorkbook,
+            conversionOptions
           );
 
-        setWorkbook(nextWorkbook);
-        setSheets(availableSheets);
-        setSelectedSheets(
-          availableSheets
+        setWorkbook(
+          nextWorkbook
+        );
+
+        setSelection(
+          nextSelection
         );
       } catch (error) {
+        setWorkbook(null);
+
         setError(
-          getSpreadsheetErrorMessage(
-            error
-          )
+          getErrorMessage(error)
         );
       } finally {
         setLoading(false);
       }
-    },
-    [url, clearSpreadsheet]
-  );
+    }, [
+      url,
+      clearSelection,
+      conversionOptions,
+    ]);
 
-  const toggleSheet = useCallback(
-    (sheetName: string) => {
-      setSelectedSheets(
-        (current) =>
-          current.includes(sheetName)
-            ? current.filter(
-                (name) =>
-                  name !== sheetName
-              )
-            : [
-                ...current,
-                sheetName,
-              ]
+  const toggleSheet =
+    useCallback(
+      (sheetName: string) => {
+        setSelection(
+          (current) => {
+            const sheet =
+              current[sheetName];
+
+            if (!sheet) {
+              return current;
+            }
+
+            const hasSelectedColumn =
+              sheet.columns.some(
+                (column) =>
+                  column.selected
+              );
+
+            return {
+              ...current,
+              [sheetName]: {
+                ...sheet,
+                columns:
+                  sheet.columns.map(
+                    (column) => ({
+                      ...column,
+                      selected:
+                        !hasSelectedColumn,
+                    })
+                  ),
+              },
+            };
+          }
+        );
+
+        setConversion(null);
+        setError(null);
+      },
+      []
+    );
+
+  const toggleColumn =
+    useCallback(
+      (
+        sheetName: string,
+        columnIndex: number
+      ) => {
+        setSelection(
+          (current) => {
+            const sheet =
+              current[sheetName];
+
+            if (!sheet) {
+              return current;
+            }
+
+            return {
+              ...current,
+              [sheetName]: {
+                ...sheet,
+                columns:
+                  sheet.columns.map(
+                    (column) =>
+                      column.index ===
+                      columnIndex
+                        ? {
+                            ...column,
+                            selected:
+                              !column.selected,
+                          }
+                        : column
+                  ),
+              },
+            };
+          }
+        );
+
+        setConversion(null);
+        setError(null);
+      },
+      []
+    );
+
+  const renameColumn =
+    useCallback(
+      (
+        sheetName: string,
+        columnIndex: number,
+        key: string
+      ) => {
+        setSelection(
+          (current) => {
+            const sheet =
+              current[sheetName];
+
+            if (!sheet) {
+              return current;
+            }
+
+            return {
+              ...current,
+              [sheetName]: {
+                ...sheet,
+                columns:
+                  sheet.columns.map(
+                    (column) =>
+                      column.index ===
+                      columnIndex
+                        ? {
+                            ...column,
+                            key,
+                          }
+                        : column
+                  ),
+              },
+            };
+          }
+        );
+
+        setConversion(null);
+        setError(null);
+      },
+      []
+    );
+
+  const selectAllSheets =
+    useCallback(() => {
+      setSelection(
+        (current) => {
+          const next = {
+            ...current,
+          };
+
+          for (
+            const sheetName of
+              Object.keys(next)
+          ) {
+            next[sheetName] = {
+              ...next[sheetName],
+              columns:
+                next[sheetName].columns.map(
+                  (column) => ({
+                    ...column,
+                    selected: true,
+                  })
+                ),
+            };
+          }
+
+          return next;
+        }
       );
 
       setConversion(null);
-      setError(null);
-    },
-    []
-  );
+    }, []);
 
-  const selectAll = useCallback(() => {
-    setSelectedSheets(sheets);
-    setConversion(null);
-    setError(null);
-  }, [sheets]);
+  const deselectAllSheets =
+    useCallback(() => {
+      setSelection(
+        (current) => {
+          const next = {
+            ...current,
+          };
 
-  const deselectAll = useCallback(() => {
-    setSelectedSheets([]);
-    setConversion(null);
-    setError(null);
-  }, []);
+          for (
+            const sheetName of
+              Object.keys(next)
+          ) {
+            next[sheetName] = {
+              ...next[sheetName],
+              columns:
+                next[sheetName].columns.map(
+                  (column) => ({
+                    ...column,
+                    selected: false,
+                  })
+                ),
+            };
+          }
+
+          return next;
+        }
+      );
+
+      setConversion(null);
+    }, []);
+
+  const selectAllColumns =
+    useCallback(
+      (sheetName: string) => {
+        setSelection(
+          (current) => {
+            const sheet =
+              current[sheetName];
+
+            if (!sheet) {
+              return current;
+            }
+
+            return {
+              ...current,
+              [sheetName]: {
+                ...sheet,
+                columns:
+                  sheet.columns.map(
+                    (column) => ({
+                      ...column,
+                      selected: true,
+                    })
+                  ),
+              },
+            };
+          }
+        );
+
+        setConversion(null);
+      },
+      []
+    );
+
+  const deselectAllColumns =
+    useCallback(
+      (sheetName: string) => {
+        setSelection(
+          (current) => {
+            const sheet =
+              current[sheetName];
+
+            if (!sheet) {
+              return current;
+            }
+
+            return {
+              ...current,
+              [sheetName]: {
+                ...sheet,
+                columns:
+                  sheet.columns.map(
+                    (column) => ({
+                      ...column,
+                      selected: false,
+                    })
+                  ),
+              },
+            };
+          }
+        );
+
+        setConversion(null);
+      },
+      []
+    );
+
+  const resetColumnKeys =
+    useCallback(
+      (sheetName: string) => {
+        setSelection(
+          (current) => {
+            const sheet =
+              current[sheetName];
+
+            if (!sheet) {
+              return current;
+            }
+
+            return {
+              ...current,
+              [sheetName]: {
+                ...sheet,
+                columns:
+                  sheet.columns.map(
+                    (column) => ({
+                      ...column,
+                      key:
+                        column.originalKey,
+                    })
+                  ),
+              },
+            };
+          }
+        );
+
+        setConversion(null);
+      },
+      []
+    );
 
   const convertSelectedSheets =
     useCallback(() => {
@@ -152,127 +452,184 @@ export function useSpreadsheet(
         return;
       }
 
+      if (
+        hasDuplicateKeys(
+          selection
+        )
+      ) {
+        setError(
+          "Each selected column must have a unique JSON key."
+        );
+        return;
+      }
+
       try {
         setError(null);
 
-        const result = convertSheets(
-          workbook,
-          selectedSheets,
-          conversionOptions
-        );
+        const result =
+          convertSheets(
+            workbook,
+            selection,
+            conversionOptions
+          );
 
-        setConversion(result);
+        setConversion(
+          result
+        );
       } catch (error) {
         setError(
-          error instanceof Error
-            ? error.message
-            : "Failed to convert spreadsheet."
+          getErrorMessage(error)
         );
       }
     }, [
       workbook,
+      selection,
       selectedSheets,
       conversionOptions,
     ]);
 
-  const copyJson = useCallback(
-    async () => {
-      const json =
-        conversion?.json;
-
-      if (!json) {
+  const copyJson =
+    useCallback(async () => {
+      if (!conversion?.json) {
         return;
       }
 
       try {
         await navigator.clipboard.writeText(
-          json
+          conversion.json
         );
       } catch {
         setError(
           "Failed to copy JSON."
         );
       }
-    },
-    [conversion]
-  );
+    }, [conversion]);
 
-  const downloadJson = useCallback(() => {
-    const json =
-      conversion?.json;
-
-    if (!json) {
-      return;
-    }
-
-    const blob = new Blob(
-      [json],
-      {
-        type: "application/json",
+  const downloadJson =
+    useCallback(() => {
+      if (!conversion?.json) {
+        return;
       }
-    );
 
-    const objectUrl =
-      URL.createObjectURL(blob);
+      const blob =
+        new Blob(
+          [conversion.json],
+          {
+            type:
+              "application/json",
+          }
+        );
 
-    const anchor =
-      document.createElement("a");
+      const objectUrl =
+        URL.createObjectURL(
+          blob
+        );
 
-    anchor.href = objectUrl;
-    anchor.download =
-      downloadFileName;
+      const anchor =
+        document.createElement(
+          "a"
+        );
 
-    document.body.appendChild(
-      anchor
-    );
+      anchor.href =
+        objectUrl;
 
-    anchor.click();
-    anchor.remove();
+      anchor.download =
+        downloadFileName;
 
-    URL.revokeObjectURL(
-      objectUrl
-    );
-  }, [
-    conversion,
-    downloadFileName,
-  ]);
+      document.body.appendChild(
+        anchor
+      );
+
+      anchor.click();
+      anchor.remove();
+
+      URL.revokeObjectURL(
+        objectUrl
+      );
+    }, [
+      conversion,
+      downloadFileName,
+    ]);
 
   return {
     url,
     setUrl,
 
+    workbook,
+
+    selection,
     sheets,
     selectedSheets,
 
     loading,
     error,
 
-    workbook,
     conversion,
 
-    json: conversion?.json ?? "",
+    json:
+      conversion?.json ?? "",
+
     convertedSheetCount:
-      conversion?.sheetNames.length ?? 0,
+      conversion?.sheetNames.length ??
+      0,
+
+    selectedColumnCount,
 
     loadSpreadsheet,
+
     toggleSheet,
-    selectAll,
-    deselectAll,
+    toggleColumn,
+
+    renameColumn,
+
+    selectAllSheets,
+    deselectAllSheets,
+
+    selectAllColumns,
+    deselectAllColumns,
+
+    resetColumnKeys,
+
     convertSelectedSheets,
+
     copyJson,
     downloadJson,
   };
 }
 
-function getSpreadsheetErrorMessage(
-  error: unknown
-): string {
-  if (error instanceof TypeError) {
-    return (
-      "Unable to access this spreadsheet. The server may not allow browser requests (CORS)."
-    );
+function hasDuplicateKeys(
+  selection: SpreadsheetSelection
+): boolean {
+  for (
+    const sheet of
+      Object.values(selection)
+  ) {
+    const keys =
+      sheet.columns
+        .filter(
+          (column) =>
+            column.selected
+        )
+        .map(
+          (column) =>
+            column.key.trim()
+        )
+        .filter(Boolean);
+
+    if (
+      keys.length !==
+      new Set(keys).size
+    ) {
+      return true;
+    }
   }
 
+  return false;
+}
+
+function getErrorMessage(
+  error: unknown
+): string {
   if (error instanceof Error) {
     return error.message;
   }

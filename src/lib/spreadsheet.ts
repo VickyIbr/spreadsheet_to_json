@@ -8,11 +8,14 @@ import type {
   ConvertedSheets,
   SheetRow,
   SpreadsheetCellValue,
+  SpreadsheetColumn,
   SpreadsheetConversionOptions,
+  SpreadsheetResult,
+  SpreadsheetSelection,
   SpreadsheetWorkbook,
 } from "@/types/spreadsheet";
 
-const DEFAULT_CONVERSION_OPTIONS: Required<
+const DEFAULT_OPTIONS: Required<
   SpreadsheetConversionOptions
 > = {
   headerRow: 1,
@@ -27,10 +30,10 @@ function resolveOptions(
 ): Required<SpreadsheetConversionOptions> {
   const headerRow =
     options?.headerRow ??
-    DEFAULT_CONVERSION_OPTIONS.headerRow;
+    DEFAULT_OPTIONS.headerRow;
 
   return {
-    ...DEFAULT_CONVERSION_OPTIONS,
+    ...DEFAULT_OPTIONS,
     ...options,
     headerRow,
     dataStartRow:
@@ -53,7 +56,10 @@ function normalizeCellValue(
 ): SpreadsheetCellValue {
   const value = cell.value;
 
-  if (value === null || value === undefined) {
+  if (
+    value === null ||
+    value === undefined
+  ) {
     return null;
   }
 
@@ -106,69 +112,86 @@ function normalizeCellValue(
   return String(value);
 }
 
-function createHeader(
-  cell: ExcelJS.Cell,
-  columnNumber: number,
-  options: Required<SpreadsheetConversionOptions>
+function normalizeHeader(
+  value: SpreadsheetCellValue,
+  index: number,
+  prefix: string
 ): string {
-  const value = normalizeCellValue(cell);
-
   if (
     value === null ||
     String(value).trim() === ""
   ) {
-    return `${options.emptyHeaderPrefix}_${columnNumber}`;
+    return `${prefix}_${index}`;
   }
 
   return String(value).trim();
 }
 
 function makeUniqueHeaders(
-  headers: string[]
-): string[] {
+  columns: SpreadsheetColumn[]
+): SpreadsheetColumn[] {
   const counts = new Map<string, number>();
 
-  return headers.map((header) => {
-    const count = counts.get(header) ?? 0;
+  return columns.map((column) => {
+    const count =
+      counts.get(column.originalKey) ?? 0;
 
-    counts.set(header, count + 1);
+    counts.set(
+      column.originalKey,
+      count + 1
+    );
 
     if (count === 0) {
-      return header;
+      return column;
     }
 
-    return `${header}_${count + 1}`;
+    return {
+      ...column,
+      originalKey:
+        `${column.originalKey}_${count + 1}`,
+      key:
+        `${column.key}_${count + 1}`,
+    };
   });
 }
 
-function getWorksheetHeaders(
+function getWorksheetColumns(
   worksheet: ExcelJS.Worksheet,
   options: Required<SpreadsheetConversionOptions>
-): string[] {
-  const headerRow = worksheet.getRow(
-    options.headerRow
-  );
+): SpreadsheetColumn[] {
+  const headerRow =
+    worksheet.getRow(options.headerRow);
 
-  const headers: string[] = [];
+  const columns: SpreadsheetColumn[] = [];
 
   headerRow.eachCell(
     {
       includeEmpty: true,
     },
     (cell, columnNumber) => {
-      headers.push(
-        createHeader(
-          cell,
+      const header =
+        normalizeHeader(
+          normalizeCellValue(cell),
           columnNumber,
-          options
-        )
-      );
+          options.emptyHeaderPrefix
+        );
+
+      columns.push({
+        originalKey: header,
+        key: header,
+        selected: true,
+        index: columnNumber,
+      });
     }
   );
 
-  return options.makeHeadersUnique
-    ? makeUniqueHeaders(headers)
-    : headers;
+  if (
+    !options.makeHeadersUnique
+  ) {
+    return columns;
+  }
+
+  return makeUniqueHeaders(columns);
 }
 
 function hasRowValue(
@@ -183,14 +206,15 @@ function hasRowValue(
 
 function worksheetToJson(
   worksheet: ExcelJS.Worksheet,
+  configuration: SpreadsheetSelection[string],
   options: Required<SpreadsheetConversionOptions>
 ): SheetRow[] {
-  const headers = getWorksheetHeaders(
-    worksheet,
-    options
-  );
+  const selectedColumns =
+    configuration.columns.filter(
+      (column) => column.selected
+    );
 
-  if (!headers.length) {
+  if (!selectedColumns.length) {
     return [];
   }
 
@@ -198,23 +222,23 @@ function worksheetToJson(
 
   worksheet.eachRow(
     {
-      includeEmpty: options.includeEmptyRows,
+      includeEmpty:
+        options.includeEmptyRows,
     },
     (row, rowNumber) => {
-      if (rowNumber < options.dataStartRow) {
+      if (
+        rowNumber <
+        options.dataStartRow
+      ) {
         return;
       }
 
       const item: SheetRow = {};
 
-      for (
-        let columnNumber = 1;
-        columnNumber <= headers.length;
-        columnNumber++
-      ) {
-        item[headers[columnNumber - 1]] =
+      for (const column of selectedColumns) {
+        item[column.key] =
           normalizeCellValue(
-            row.getCell(columnNumber)
+            row.getCell(column.index)
           );
       }
 
@@ -233,13 +257,16 @@ function worksheetToJson(
 export async function fetchSpreadsheet(
   inputUrl: string
 ): Promise<SpreadsheetWorkbook> {
-  const { downloadUrl } =
+  const {
+    downloadUrl,
+  } =
     convertSpreadsheetUrl(inputUrl);
 
   let response: Response;
 
   try {
-    response = await fetch(downloadUrl);
+    response =
+      await fetch(downloadUrl);
   } catch {
     throw new Error(
       "Unable to access this spreadsheet. The server may not allow browser requests (CORS)."
@@ -261,17 +288,22 @@ export async function fetchSpreadsheet(
     );
   }
 
-  const workbook = new ExcelJS.Workbook();
+  const workbook =
+    new ExcelJS.Workbook();
 
   try {
-    await workbook.xlsx.load(arrayBuffer);
+    await workbook.xlsx.load(
+      arrayBuffer
+    );
   } catch {
     throw new Error(
       "The provided URL did not return a valid XLSX spreadsheet."
     );
   }
 
-  if (!workbook.worksheets.length) {
+  if (
+    workbook.worksheets.length === 0
+  ) {
     throw new Error(
       "No sheets found in this spreadsheet."
     );
@@ -280,35 +312,98 @@ export async function fetchSpreadsheet(
   return workbook;
 }
 
+export function getSheetConfiguration(
+  workbook: SpreadsheetWorkbook,
+  sheetName: string,
+  options?: SpreadsheetConversionOptions
+): SpreadsheetSelection[string] | null {
+  const worksheet =
+    workbook.getWorksheet(sheetName);
+
+  if (!worksheet) {
+    return null;
+  }
+
+  const resolvedOptions =
+    resolveOptions(options);
+
+  return {
+    name: worksheet.name,
+    columns:
+      getWorksheetColumns(
+        worksheet,
+        resolvedOptions
+      ),
+  };
+}
+
+export function getSpreadsheetSelection(
+  workbook: SpreadsheetWorkbook,
+  options?: SpreadsheetConversionOptions
+): SpreadsheetSelection {
+  const selection: SpreadsheetSelection = {};
+
+  for (const worksheet of workbook.worksheets) {
+    const configuration =
+      getSheetConfiguration(
+        workbook,
+        worksheet.name,
+        options
+      );
+
+    if (configuration) {
+      selection[worksheet.name] =
+        configuration;
+    }
+  }
+
+  return selection;
+}
+
 export function convertSheets(
   workbook: SpreadsheetWorkbook,
-  selectedSheets: string[],
+  selection: SpreadsheetSelection,
   options?: SpreadsheetConversionOptions
 ): ConvertedSheets {
   const resolvedOptions =
     resolveOptions(options);
 
-  const result: Record<
-    string,
-    SheetRow[]
-  > = {};
+  const result: SpreadsheetResult = {};
 
-  for (const sheetName of selectedSheets) {
+  for (
+    const [
+      sheetName,
+      configuration,
+    ] of Object.entries(selection)
+  ) {
     const worksheet =
-      workbook.getWorksheet(sheetName);
+      workbook.getWorksheet(
+        sheetName
+      );
 
     if (!worksheet) {
+      continue;
+    }
+
+    const selectedColumns =
+      configuration.columns.filter(
+        (column) => column.selected
+      );
+
+    if (!selectedColumns.length) {
       continue;
     }
 
     result[sheetName] =
       worksheetToJson(
         worksheet,
+        configuration,
         resolvedOptions
       );
   }
 
-  const sheetNames = Object.keys(result);
+  const sheetNames =
+    Object.keys(result);
 
   return {
     result,

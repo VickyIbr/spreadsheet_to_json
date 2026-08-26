@@ -8,9 +8,11 @@ export type SpreadsheetCellValue =
   | boolean
   | null;
 
-export type SheetRow = Record<string, SpreadsheetCellValue>;
+export type SheetRow =
+  Record<string, SpreadsheetCellValue>;
 
-export type SpreadsheetResult = Record<string, SheetRow[]>;
+export type SpreadsheetResult =
+  Record<string, SheetRow[]>;
 
 export type SpreadsheetProvider =
   | "google-sheets"
@@ -37,23 +39,60 @@ export interface SpreadsheetConversionOptions {
   dataStartRow?: number;
 
   /**
-   * Prefix used when a header cell is empty.
+   * Prefix for empty column headers.
    * Default: "column"
    */
   emptyHeaderPrefix?: string;
 
   /**
-   * Whether rows containing no values should be included.
+   * Include rows where every value is empty.
    * Default: false
    */
   includeEmptyRows?: boolean;
 
   /**
-   * Whether duplicate headers should receive a suffix.
+   * Automatically make duplicate headers unique.
    * Default: true
    */
   makeHeadersUnique?: boolean;
 }
+
+export interface SpreadsheetColumn {
+  /**
+   * Original column name from spreadsheet.
+   */
+  originalKey: string;
+
+  /**
+   * Key used in generated JSON.
+   */
+  key: string;
+
+  /**
+   * Whether this column will be exported.
+   */
+  selected: boolean;
+
+  /**
+   * Original Excel column index.
+   */
+  index: number;
+}
+
+export interface SpreadsheetSheet {
+  /**
+   * Original worksheet name.
+   */
+  name: string;
+
+  /**
+   * Columns available in this sheet.
+   */
+  columns: SpreadsheetColumn[];
+}
+
+export type SpreadsheetSelection =
+  Record<string, SpreadsheetSheet>;
 
 export interface ConvertedSheets {
   result: SpreadsheetResult;
